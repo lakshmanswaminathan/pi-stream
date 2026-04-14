@@ -47,7 +47,8 @@ def _streamer_command(pi_ip: str, port: int) -> dict:
     """Return platform-specific streaming commands."""
     return {
         "macos": (
-            f"ffmpeg -f avfoundation -framerate 30 -i '1' "
+            f"# First run: ffmpeg -f avfoundation -list_devices true -i '' to find your screen index\n"
+            f"ffmpeg -f avfoundation -framerate 30 -capture_cursor 1 -i 'Capture screen 0' "
             f"-vcodec libx264 -preset ultrafast -tune zerolatency "
             f"-b:v 3M -maxrate 3M -bufsize 6M "
             f"-f mpegts 'udp://{pi_ip}:{port}?pkt_size=1316'"
