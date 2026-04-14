@@ -2,46 +2,71 @@
 
 import logging
 import os
-import signal
 import subprocess
 import time
 
 logger = logging.getLogger(__name__)
 
+PLAYER_PROCESS_NAME = "pi-stream-receiver"
+
 
 class PiController:
-    """Manages ffplay receiver directly as a local subprocess."""
+    """Manages stream receiver directly as a local subprocess."""
 
     def __init__(self, **_kwargs):
         self._proc: subprocess.Popen | None = None
 
+    def _has_mpv(self) -> bool:
+        return subprocess.run(["which", "mpv"], capture_output=True).returncode == 0
+
     def start_receiver(self, udp_port: int = 9999) -> bool:
-        """Start ffplay fullscreen on HDMI, listening for UDP stream."""
+        """Start receiver fullscreen on HDMI, listening for TCP stream."""
         try:
             # Kill any existing receiver first
-            subprocess.run(["pkill", "-f", "ffplay.*udp://"], capture_output=True)
+            subprocess.run(["pkill", "-f", PLAYER_PROCESS_NAME], capture_output=True)
             time.sleep(0.5)
 
             env = {**os.environ, "DISPLAY": ":0"}
-            self._proc = subprocess.Popen(
-                [
-                    "ffplay", "-fs", "-an",
+
+            if self._has_mpv():
+                cmd = [
+                    "mpv",
+                    f"--title={PLAYER_PROCESS_NAME}",
+                    "--fullscreen",
+                    "--no-audio",
+                    "--profile=low-latency",
+                    "--no-cache",
+                    "--untimed",
+                    "--no-demuxer-thread",
+                    "--video-sync=audio",
+                    "--framedrop=decoder+vo",
+                    f"tcp://0.0.0.0:{udp_port}?listen",
+                ]
+            else:
+                cmd = [
+                    "ffplay",
+                    "-window_title", PLAYER_PROCESS_NAME,
+                    "-fs", "-an",
                     "-fflags", "nobuffer",
                     "-flags", "low_delay",
+                    "-framedrop",
                     "-analyzeduration", "100000",
                     "-probesize", "100000",
-                    "-i", f"udp://@:{udp_port}?overrun_nonfatal=1&fifo_size=50000000",
+                    "-i", f"tcp://0.0.0.0:{udp_port}?listen",
                     "-loglevel", "warning",
-                ],
+                ]
+
+            self._proc = subprocess.Popen(
+                cmd,
                 env=env,
                 stdout=subprocess.DEVNULL,
                 stderr=open("/tmp/pi-stream-receiver.log", "w"),
             )
-            logger.info("Receiver started with PID %s", self._proc.pid)
+            logger.info("Receiver started with PID %s (player: %s)", self._proc.pid, "mpv" if self._has_mpv() else "ffplay")
             return True
 
         except FileNotFoundError:
-            logger.error("ffplay not found — install ffmpeg: sudo apt install ffmpeg")
+            logger.error("No player found — install mpv or ffmpeg: sudo apt install mpv")
             return False
         except Exception:
             logger.exception("Failed to start receiver")
@@ -54,7 +79,7 @@ class PiController:
                 self._proc.terminate()
                 self._proc.wait(timeout=5)
             else:
-                subprocess.run(["pkill", "-f", "ffplay.*udp://"], capture_output=True)
+                subprocess.run(["pkill", "-f", PLAYER_PROCESS_NAME], capture_output=True)
             self._proc = None
             logger.info("Receiver stopped")
             return True
@@ -66,11 +91,11 @@ class PiController:
         """Check if the receiver is currently running."""
         if self._proc and self._proc.poll() is None:
             return True
-        result = subprocess.run(["pgrep", "-f", "ffplay.*udp://"], capture_output=True)
+        result = subprocess.run(["pgrep", "-f", PLAYER_PROCESS_NAME], capture_output=True)
         return result.returncode == 0
 
     def clear_screen(self) -> bool:
         """Kill any display processes."""
-        subprocess.run(["pkill", "-f", "ffplay.*udp://"], capture_output=True)
+        subprocess.run(["pkill", "-f", PLAYER_PROCESS_NAME], capture_output=True)
         self._proc = None
         return True

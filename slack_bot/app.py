@@ -50,24 +50,27 @@ def _streamer_command(pi_ip: str, port: int) -> dict:
             f"# First run: ffmpeg -f avfoundation -list_devices true -i '' to find your screen index\n"
             f"ffmpeg -f avfoundation -framerate 30 -capture_cursor 1 \\\n"
             f"  -i 'Capture screen 0' \\\n"
+            f"  -vf 'scale=1920:1080' -pix_fmt yuv420p \\\n"
             f"  -vcodec libx264 -preset ultrafast -tune zerolatency \\\n"
-            f"  -b:v 3M -maxrate 3M -bufsize 6M \\\n"
-            f"  -g 30 -keyint_min 30 \\\n"
-            f"  -f mpegts 'udp://{pi_ip}:{port}?pkt_size=1316'"
+            f"  -crf 23 -maxrate 4M -bufsize 4M \\\n"
+            f"  -g 60 -keyint_min 60 \\\n"
+            f"  -f mpegts 'tcp://{pi_ip}:{port}'"
         ),
         "linux": (
             f"ffmpeg -f x11grab -framerate 30 -i :0.0 \\\n"
+            f"  -vf 'scale=1920:1080' -pix_fmt yuv420p \\\n"
             f"  -vcodec libx264 -preset ultrafast -tune zerolatency \\\n"
-            f"  -b:v 3M -maxrate 3M -bufsize 6M \\\n"
-            f"  -g 30 -keyint_min 30 \\\n"
-            f"  -f mpegts 'udp://{pi_ip}:{port}?pkt_size=1316'"
+            f"  -crf 23 -maxrate 4M -bufsize 4M \\\n"
+            f"  -g 60 -keyint_min 60 \\\n"
+            f"  -f mpegts 'tcp://{pi_ip}:{port}'"
         ),
         "windows": (
             f"ffmpeg -f gdigrab -framerate 30 -i desktop ^\n"
+            f"  -vf \"scale=1920:1080\" -pix_fmt yuv420p ^\n"
             f"  -vcodec libx264 -preset ultrafast -tune zerolatency ^\n"
-            f"  -b:v 3M -maxrate 3M -bufsize 6M ^\n"
-            f"  -g 30 -keyint_min 30 ^\n"
-            f"  -f mpegts \"udp://{pi_ip}:{port}?pkt_size=1316\""
+            f"  -crf 23 -maxrate 4M -bufsize 4M ^\n"
+            f"  -g 60 -keyint_min 60 ^\n"
+            f"  -f mpegts \"tcp://{pi_ip}:{port}\""
         ),
     }
 
