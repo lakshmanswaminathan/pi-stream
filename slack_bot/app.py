@@ -1,8 +1,8 @@
 """Slack bot for controlling the Pi TV stream.
 
 Slash commands:
-  /stream        — Start streaming. Bot starts the Pi receiver and replies with
-                   the command you run locally to send your screen.
+  /stream <ip>   — Stream your screen to the TV. Provide your Mac's IP.
+                   Pi connects to your Mac via VNC and displays fullscreen.
   /stream stop   — Stop the current stream and free the TV.
   /stream status — Check if someone is currently streaming.
 """
@@ -27,52 +27,17 @@ logger = logging.getLogger(__name__)
 SLACK_BOT_TOKEN = os.environ["SLACK_BOT_TOKEN"]
 SLACK_APP_TOKEN = os.environ["SLACK_APP_TOKEN"]  # xapp-... for Socket Mode
 
-PI_HOST = os.environ.get("PI_HOST", "localhost")
-PI_LAN_IP = os.environ.get("PI_LAN_IP", PI_HOST)  # IP shown in ffmpeg commands for streamers
-STREAM_UDP_PORT = int(os.environ.get("STREAM_UDP_PORT", "9999"))
 STREAM_TIMEOUT_MINUTES = int(os.environ.get("STREAM_TIMEOUT_MINUTES", "60"))
 
 # --- State ---
 _lock = threading.Lock()
 _current_stream: dict | None = None  # {"user_id": str, "user_name": str, "started_at": float, "channel": str}
 
-# --- Pi controller (runs locally, no SSH) ---
+# --- Pi controller (runs locally on Pi) ---
 pi = PiController()
 
 # --- Slack app (Socket Mode — no public URL needed) ---
 app = App(token=SLACK_BOT_TOKEN)
-
-
-def _streamer_command(pi_ip: str, port: int) -> dict:
-    """Return platform-specific streaming commands."""
-    return {
-        "macos": (
-            f"# First run: ffmpeg -f avfoundation -list_devices true -i '' to find your screen index\n"
-            f"ffmpeg -f avfoundation -framerate 30 -capture_cursor 1 \\\n"
-            f"  -i 'Capture screen 0' \\\n"
-            f"  -vf 'scale=1920:1080' -pix_fmt yuv420p \\\n"
-            f"  -vcodec libx264 -preset ultrafast -tune zerolatency \\\n"
-            f"  -crf 23 -maxrate 4M -bufsize 4M \\\n"
-            f"  -g 60 -keyint_min 60 \\\n"
-            f"  -f mpegts 'tcp://{pi_ip}:{port}'"
-        ),
-        "linux": (
-            f"ffmpeg -f x11grab -framerate 30 -i :0.0 \\\n"
-            f"  -vf 'scale=1920:1080' -pix_fmt yuv420p \\\n"
-            f"  -vcodec libx264 -preset ultrafast -tune zerolatency \\\n"
-            f"  -crf 23 -maxrate 4M -bufsize 4M \\\n"
-            f"  -g 60 -keyint_min 60 \\\n"
-            f"  -f mpegts 'tcp://{pi_ip}:{port}'"
-        ),
-        "windows": (
-            f"ffmpeg -f gdigrab -framerate 30 -i desktop ^\n"
-            f"  -vf \"scale=1920:1080\" -pix_fmt yuv420p ^\n"
-            f"  -vcodec libx264 -preset ultrafast -tune zerolatency ^\n"
-            f"  -crf 23 -maxrate 4M -bufsize 4M ^\n"
-            f"  -g 60 -keyint_min 60 ^\n"
-            f"  -f mpegts \"tcp://{pi_ip}:{port}\""
-        ),
-    }
 
 
 def _auto_stop_timer(user_id: str, channel: str, timeout: int):
@@ -81,7 +46,7 @@ def _auto_stop_timer(user_id: str, channel: str, timeout: int):
     with _lock:
         global _current_stream
         if _current_stream and _current_stream["user_id"] == user_id:
-            pi.stop_receiver()
+            pi.stop_vnc()
             _current_stream = None
             try:
                 app.client.chat_postMessage(
@@ -96,13 +61,14 @@ def _auto_stop_timer(user_id: str, channel: str, timeout: int):
 def handle_stream(ack, command, respond):
     ack()
 
-    text = (command.get("text") or "").strip().lower()
+    text = (command.get("text") or "").strip()
+    text_lower = text.lower()
     user_id = command["user_id"]
     user_name = command.get("user_name", "someone")
     channel = command["channel_id"]
 
     # --- /stream stop ---
-    if text == "stop":
+    if text_lower == "stop":
         with _lock:
             global _current_stream
             if not _current_stream:
@@ -114,13 +80,13 @@ def handle_stream(ack, command, respond):
                     "Only they can stop it (or an admin can restart the bot)."
                 )
                 return
-            pi.stop_receiver()
+            pi.stop_vnc()
             _current_stream = None
         respond(":tv: Stream stopped. The TV is free.", response_type="in_channel")
         return
 
     # --- /stream status ---
-    if text == "status":
+    if text_lower == "status":
         with _lock:
             if _current_stream:
                 elapsed = int((time.time() - _current_stream["started_at"]) / 60)
@@ -128,10 +94,10 @@ def handle_stream(ack, command, respond):
                     f":tv: <@{_current_stream['user_id']}> has been streaming for {elapsed} min."
                 )
             else:
-                respond(":tv: No one is streaming. Run `/stream` to start.")
+                respond(":tv: No one is streaming. Run `/stream <your-ip>` to start.")
         return
 
-    # --- /stream (start) ---
+    # --- /stream <ip> (start) ---
     with _lock:
         if _current_stream:
             respond(
@@ -140,11 +106,29 @@ def handle_stream(ack, command, respond):
             )
             return
 
-    # Start receiver on Pi
-    respond(":hourglass_flowing_sand: Starting TV receiver on the Pi...")
-    ok = pi.start_receiver(udp_port=STREAM_UDP_PORT)
+    # Validate IP
+    target_ip = text.strip()
+    if not target_ip:
+        respond(
+            ":tv: *Usage:* `/stream <your-mac-ip>`\n\n"
+            "*Setup (one-time):*\n"
+            "1. Open *System Settings > General > Sharing*\n"
+            "2. Enable *Screen Sharing* (VNC)\n"
+            "3. Find your IP: run `ipconfig getifaddr en0` in Terminal\n\n"
+            "*Then:* `/stream 192.168.1.xxx`"
+        )
+        return
+
+    # Start VNC viewer on Pi
+    respond(f":hourglass_flowing_sand: Connecting to your screen at `{target_ip}`...")
+    ok = pi.start_vnc(target_ip)
     if not ok:
-        respond(":x: Failed to start receiver on Pi. Is it powered on and reachable?")
+        respond(
+            ":x: Failed to connect. Check that:\n"
+            "1. Screen Sharing is enabled on your Mac\n"
+            "2. Your IP is correct (run `ipconfig getifaddr en0`)\n"
+            "3. You're on the same network as the Pi"
+        )
         return
 
     with _lock:
@@ -153,6 +137,7 @@ def handle_stream(ack, command, respond):
             "user_name": user_name,
             "started_at": time.time(),
             "channel": channel,
+            "target_ip": target_ip,
         }
 
     # Start auto-stop timer
@@ -162,22 +147,16 @@ def handle_stream(ack, command, respond):
         daemon=True,
     ).start()
 
-    cmds = _streamer_command(PI_LAN_IP, STREAM_UDP_PORT)
-
     respond(
-        f":tv: *Pi receiver is ready!* Run one of these on your machine to start streaming:\n\n"
-        f"*macOS:*\n```\n{cmds['macos']}\n```\n"
-        f"*Linux:*\n```\n{cmds['linux']}\n```\n"
-        f"*Windows:*\n```\n{cmds['windows']}\n```\n"
-        f"\n:bulb: Requires `ffmpeg` installed locally. Stream will auto-stop after {STREAM_TIMEOUT_MINUTES} min.\n"
-        f"Run `/stream stop` when you're done."
+        f":tv: *Streaming to the TV!*\n"
+        f"Your screen (`{target_ip}`) is now on the office TV.\n"
+        f"Run `/stream stop` when you're done. Auto-stops after {STREAM_TIMEOUT_MINUTES} min."
     )
-
 
 
 @app.event("app_mention")
 def handle_mention(event, say):
-    say("Use `/stream` to share your screen to the TV, `/stream stop` to end, `/stream status` to check.")
+    say("Use `/stream <your-ip>` to share your screen to the TV, `/stream stop` to end, `/stream status` to check.")
 
 
 def main():
