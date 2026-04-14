@@ -20,9 +20,6 @@ oauth_config:
       - chat:write
 
 settings:
-  event_subscriptions:
-    bot_events:
-      - app_mention
   interactivity:
     is_enabled: false
   org_deploy_enabled: false
