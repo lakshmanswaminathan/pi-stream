@@ -28,6 +28,7 @@ SLACK_BOT_TOKEN = os.environ["SLACK_BOT_TOKEN"]
 SLACK_APP_TOKEN = os.environ["SLACK_APP_TOKEN"]  # xapp-... for Socket Mode
 
 PI_HOST = os.environ.get("PI_HOST", "localhost")
+PI_LAN_IP = os.environ.get("PI_LAN_IP", PI_HOST)  # IP shown in ffmpeg commands for streamers
 STREAM_UDP_PORT = int(os.environ.get("STREAM_UDP_PORT", "9999"))
 STREAM_TIMEOUT_MINUTES = int(os.environ.get("STREAM_TIMEOUT_MINUTES", "60"))
 
@@ -153,7 +154,7 @@ def handle_stream(ack, command, respond):
         daemon=True,
     ).start()
 
-    cmds = _streamer_command(PI_HOST, STREAM_UDP_PORT)
+    cmds = _streamer_command(PI_LAN_IP, STREAM_UDP_PORT)
 
     respond(
         f":tv: *Pi receiver is ready!* Run one of these on your machine to start streaming:\n\n"
