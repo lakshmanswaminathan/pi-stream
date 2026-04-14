@@ -1,127 +1,76 @@
-"""SSH control for the Raspberry Pi receiver."""
+"""Local control for the Raspberry Pi receiver (no SSH, runs directly on the Pi)."""
 
 import logging
+import os
+import signal
+import subprocess
 import time
-
-import paramiko
 
 logger = logging.getLogger(__name__)
 
 
 class PiController:
-    """Manages SSH connections to the Pi and controls the stream receiver."""
+    """Manages ffplay receiver directly as a local subprocess."""
 
-    def __init__(self, host: str, username: str, key_path: str | None = None, password: str | None = None, port: int = 22):
-        self.host = host
-        self.username = username
-        self.key_path = key_path
-        self.password = password
-        self.port = port
-        self._receiver_pid: int | None = None
-
-    def _connect(self) -> paramiko.SSHClient:
-        client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        connect_kwargs: dict = {
-            "hostname": self.host,
-            "port": self.port,
-            "username": self.username,
-        }
-        if self.key_path:
-            connect_kwargs["key_filename"] = self.key_path
-        elif self.password:
-            connect_kwargs["password"] = self.password
-        client.connect(**connect_kwargs)
-        return client
+    def __init__(self, **_kwargs):
+        self._proc: subprocess.Popen | None = None
 
     def start_receiver(self, udp_port: int = 9999) -> bool:
-        """SSH into Pi and start ffplay fullscreen on HDMI, listening for UDP stream."""
+        """Start ffplay fullscreen on HDMI, listening for UDP stream."""
         try:
-            client = self._connect()
-
             # Kill any existing receiver first
-            client.exec_command("pkill -f 'ffplay.*udp://'")
+            subprocess.run(["pkill", "-f", "ffplay.*udp://"], capture_output=True)
             time.sleep(0.5)
 
-            # Start ffplay fullscreen on the Pi's display
-            # DISPLAY=:0 targets the Pi's HDMI output
-            # -fs = fullscreen, -an = no audio decode (lower latency)
-            # -fflags nobuffer + low analyzeduration/probesize = minimal latency
-            cmd = (
-                "DISPLAY=:0 nohup ffplay -fs -an "
-                "-fflags nobuffer -flags low_delay "
-                "-analyzeduration 100000 -probesize 100000 "
-                f"-i 'udp://@:{udp_port}?overrun_nonfatal=1&fifo_size=50000000' "
-                "-loglevel warning "
-                "> /tmp/pi-stream-receiver.log 2>&1 & echo $!"
+            env = {**os.environ, "DISPLAY": ":0"}
+            self._proc = subprocess.Popen(
+                [
+                    "ffplay", "-fs", "-an",
+                    "-fflags", "nobuffer",
+                    "-flags", "low_delay",
+                    "-analyzeduration", "100000",
+                    "-probesize", "100000",
+                    "-i", f"udp://@:{udp_port}?overrun_nonfatal=1&fifo_size=50000000",
+                    "-loglevel", "warning",
+                ],
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=open("/tmp/pi-stream-receiver.log", "w"),
             )
-            _, stdout, stderr = client.exec_command(cmd)
-            pid_str = stdout.read().decode().strip()
+            logger.info("Receiver started with PID %s", self._proc.pid)
+            return True
 
-            if pid_str.isdigit():
-                self._receiver_pid = int(pid_str)
-                logger.info("Receiver started on Pi with PID %s", self._receiver_pid)
-                client.close()
-                return True
-
-            err = stderr.read().decode().strip()
-            logger.error("Failed to start receiver: %s", err)
-            client.close()
+        except FileNotFoundError:
+            logger.error("ffplay not found — install ffmpeg: sudo apt install ffmpeg")
             return False
-
         except Exception:
-            logger.exception("SSH connection to Pi failed")
+            logger.exception("Failed to start receiver")
             return False
 
     def stop_receiver(self) -> bool:
-        """Kill the receiver process on the Pi."""
+        """Kill the receiver process."""
         try:
-            client = self._connect()
-            client.exec_command("pkill -f 'ffplay.*udp://'")
-            self._receiver_pid = None
-            logger.info("Receiver stopped on Pi")
-            client.close()
+            if self._proc and self._proc.poll() is None:
+                self._proc.terminate()
+                self._proc.wait(timeout=5)
+            else:
+                subprocess.run(["pkill", "-f", "ffplay.*udp://"], capture_output=True)
+            self._proc = None
+            logger.info("Receiver stopped")
             return True
         except Exception:
-            logger.exception("Failed to stop receiver on Pi")
+            logger.exception("Failed to stop receiver")
             return False
 
     def is_receiver_running(self) -> bool:
-        """Check if the receiver is currently running on the Pi."""
-        try:
-            client = self._connect()
-            _, stdout, _ = client.exec_command("pgrep -f 'ffplay.*udp://'")
-            result = stdout.read().decode().strip()
-            client.close()
-            return bool(result)
-        except Exception:
-            logger.exception("Failed to check receiver status")
-            return False
-
-    def show_message(self, message: str) -> bool:
-        """Display a text message on the Pi's screen (e.g., 'Waiting for stream...')."""
-        try:
-            client = self._connect()
-            # Use feh to display a generated image, or fall back to terminal message
-            cmd = (
-                f"DISPLAY=:0 xterm -fullscreen -fa 'Monospace' -fs 36 "
-                f"-e 'echo \"{message}\" && sleep 86400' &"
-            )
-            client.exec_command(cmd)
-            client.close()
+        """Check if the receiver is currently running."""
+        if self._proc and self._proc.poll() is None:
             return True
-        except Exception:
-            logger.exception("Failed to show message on Pi")
-            return False
+        result = subprocess.run(["pgrep", "-f", "ffplay.*udp://"], capture_output=True)
+        return result.returncode == 0
 
     def clear_screen(self) -> bool:
-        """Kill any display processes on the Pi."""
-        try:
-            client = self._connect()
-            client.exec_command("pkill -f 'ffplay.*udp://'")
-            client.exec_command("pkill -f 'xterm.*fullscreen'")
-            client.close()
-            return True
-        except Exception:
-            logger.exception("Failed to clear Pi screen")
-            return False
+        """Kill any display processes."""
+        subprocess.run(["pkill", "-f", "ffplay.*udp://"], capture_output=True)
+        self._proc = None
+        return True

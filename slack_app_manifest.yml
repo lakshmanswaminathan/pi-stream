@@ -1,27 +1,27 @@
 display_information:
-  name: Pi Stream
-  description: Stream your screen to the office TV via Raspberry Pi
-  background_color: "#2c2d30"
+    name: Pi Stream
+    description: Stream your screen to the office TV via Raspberry Pi
+    background_color: "#2c2d30"
 
 features:
-  bot_user:
-    display_name: Pi Stream
-    always_online: true
-  slash_commands:
-    - command: /stream
-      description: Stream your screen to the TV (stop | status)
-      usage_hint: "[stop | status]"
-      should_escape: false
+    bot_user:
+      display_name: Pi Stream
+      always_online: true
+    slash_commands:
+      - command: /stream
+        description: Stream your screen to the TV (stop | status)
+        usage_hint: "[stop | status]"
+        should_escape: false
 
 oauth_config:
-  scopes:
-    bot:
-      - commands
-      - chat:write
+    scopes:
+      bot:
+        - commands
+        - chat:write
 
 settings:
-  interactivity:
-    is_enabled: false
-  org_deploy_enabled: false
-  socket_mode_enabled: true
-  token_rotation_enabled: false
+    interactivity:
+      is_enabled: false
+    org_deploy_enabled: false
+    socket_mode_enabled: true
+    token_rotation_enabled: false

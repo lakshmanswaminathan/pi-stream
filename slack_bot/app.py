@@ -27,12 +27,7 @@ logger = logging.getLogger(__name__)
 SLACK_BOT_TOKEN = os.environ["SLACK_BOT_TOKEN"]
 SLACK_APP_TOKEN = os.environ["SLACK_APP_TOKEN"]  # xapp-... for Socket Mode
 
-PI_HOST = os.environ["PI_HOST"]
-PI_USER = os.environ.get("PI_USER", "pi")
-PI_SSH_KEY = os.environ.get("PI_SSH_KEY")  # path to private key
-PI_PASSWORD = os.environ.get("PI_PASSWORD")
-PI_SSH_PORT = int(os.environ.get("PI_SSH_PORT", "22"))
-
+PI_HOST = os.environ.get("PI_HOST", "localhost")
 STREAM_UDP_PORT = int(os.environ.get("STREAM_UDP_PORT", "9999"))
 STREAM_TIMEOUT_MINUTES = int(os.environ.get("STREAM_TIMEOUT_MINUTES", "60"))
 
@@ -40,14 +35,8 @@ STREAM_TIMEOUT_MINUTES = int(os.environ.get("STREAM_TIMEOUT_MINUTES", "60"))
 _lock = threading.Lock()
 _current_stream: dict | None = None  # {"user_id": str, "user_name": str, "started_at": float, "channel": str}
 
-# --- Pi controller ---
-pi = PiController(
-    host=PI_HOST,
-    username=PI_USER,
-    key_path=PI_SSH_KEY,
-    password=PI_PASSWORD,
-    port=PI_SSH_PORT,
-)
+# --- Pi controller (runs locally, no SSH) ---
+pi = PiController()
 
 # --- Slack app (Socket Mode — no public URL needed) ---
 app = App(token=SLACK_BOT_TOKEN)
