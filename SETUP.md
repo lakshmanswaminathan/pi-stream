@@ -6,7 +6,7 @@
 - System Settings → General → Sharing → **Screen Sharing** → ON
 - Click the **(i)** info button next to Screen Sharing
 - Check **"VNC viewers may control screen with password"**
-- Set password to: `stream`
+- Set a password (default in the bot is `stream`, but you can use anything — just set `VNC_PASSWORD` in the Pi's `.env` to match)
 - Under "Allow access for", select **"All users"**
 
 ### 2. Disable VNC Timeouts
