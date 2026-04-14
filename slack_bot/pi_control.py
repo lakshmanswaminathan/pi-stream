@@ -57,12 +57,16 @@ class PiController:
         return None
 
     def _create_reconnect_script(self, target_ip: str, password: str, port: int) -> str:
-        passwd_file = self._create_passwd_file()
-        passwd_arg = f"-PasswordFile={passwd_file}" if passwd_file else ""
         script = f"""#!/bin/bash
 # Auto-reconnecting VNC viewer
 while true; do
-    xtigervncviewer -FullScreen -ViewOnly -PreferredEncoding=Tight -QualityLevel=5 -CompressLevel=2 -AutoSelect=0 {passwd_arg} {target_ip}::{port} >> /tmp/pi-stream-receiver.log 2>&1
+    expect -c '
+        set timeout -1
+        spawn xtigervncviewer -FullScreen -ViewOnly -PreferredEncoding=Tight -QualityLevel=5 -CompressLevel=2 -AutoSelect=0 {target_ip}::{port}
+        expect "Password:"
+        send "{password}\\r"
+        expect eof
+    ' >> /tmp/pi-stream-receiver.log 2>&1
 
     if [ -f /tmp/pi-stream-stop ]; then
         rm -f /tmp/pi-stream-stop
