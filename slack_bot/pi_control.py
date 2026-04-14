@@ -27,7 +27,7 @@ class PiController:
 # Auto-reconnecting VNC viewer
 while true; do
     expect -c '
-        set timeout 30
+        set timeout -1
         spawn xtigervncviewer -FullScreen -ViewOnly -QualityLevel=5 -CompressLevel=6 -PreferredEncoding=ZRLE -LowColorLevel=1 {target_ip}::{port}
         expect "Password:"
         send "{password}\\r"
