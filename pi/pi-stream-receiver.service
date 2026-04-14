@@ -1,0 +1,21 @@
+# systemd service for the Pi stream receiver (optional alternative to SSH approach)
+# Install: sudo cp pi-stream-receiver.service /etc/systemd/system/
+#          sudo systemctl enable --now pi-stream-receiver
+
+[Unit]
+Description=Pi Stream Receiver
+After=graphical-session.target
+Wants=graphical-session.target
+
+[Service]
+Type=simple
+User=pi
+Environment=DISPLAY=:0
+Environment=STREAM_UDP_PORT=9999
+Environment=CONTROL_PORT=9998
+ExecStart=/usr/bin/python3 /home/pi/pi-stream/receiver.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target
