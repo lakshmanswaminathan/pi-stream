@@ -1,9 +1,8 @@
-"""Local control for the Raspberry Pi VNC viewer (runs directly on the Pi)."""
+"""Local control for the Raspberry Pi display (VNC viewer + ffmpeg receiver)."""
 
 import logging
 import os
 import subprocess
-import threading
 import time
 
 logger = logging.getLogger(__name__)
@@ -12,17 +11,33 @@ VNC_PASSWORD = os.environ.get("VNC_PASSWORD", "stream")
 
 
 class PiController:
-    """Manages VNC viewer on the Pi to connect to a Mac's Screen Sharing."""
+    """Manages VNC viewer and ffmpeg/mpv receiver on the Pi."""
 
     def __init__(self, **_kwargs):
         self._proc: subprocess.Popen | None = None
-        self._reconnect_thread: threading.Thread | None = None
-        self._should_run = False
-        self._target_ip: str | None = None
-        self._port: int = 5900
+        self._mode: str | None = None  # "vnc" or "hd"
+
+    # --- Generic stop ---
+
+    def stop(self) -> bool:
+        """Stop whatever is running."""
+        if self._mode == "vnc":
+            return self._stop_vnc()
+        elif self._mode == "hd":
+            return self._stop_receiver()
+        # Kill everything just in case
+        subprocess.run(["pkill", "-f", "pi-stream-vnc-loop"], capture_output=True)
+        subprocess.run(["pkill", "-f", "tigervncviewer"], capture_output=True)
+        subprocess.run(["pkill", "-f", "pi-stream-receiver"], capture_output=True)
+        subprocess.run(["pkill", "-f", "mpv.*tcp://"], capture_output=True)
+        subprocess.run(["pkill", "-f", "ffplay.*tcp://"], capture_output=True)
+        self._proc = None
+        self._mode = None
+        return True
+
+    # --- VNC mode ---
 
     def _create_reconnect_script(self, target_ip: str, password: str, port: int) -> str:
-        """Create a bash script that auto-reconnects VNC with expect for password."""
         script = f"""#!/bin/bash
 # Auto-reconnecting VNC viewer
 while true; do
@@ -34,7 +49,6 @@ while true; do
         expect eof
     ' >> /tmp/pi-stream-receiver.log 2>&1
 
-    # Check if stop file exists (signals we should quit)
     if [ -f /tmp/pi-stream-stop ]; then
         rm -f /tmp/pi-stream-stop
         exit 0
@@ -53,16 +67,11 @@ done
     def start_vnc(self, target_ip: str, port: int = 5900) -> bool:
         """Launch VNC viewer with auto-reconnect."""
         try:
-            self.stop_vnc()
+            self.stop()
             time.sleep(0.5)
-
-            self._target_ip = target_ip
-            self._port = port
-            self._should_run = True
 
             env = {**os.environ, "DISPLAY": ":0"}
 
-            # Remove stop signal file
             try:
                 os.remove("/tmp/pi-stream-stop")
             except FileNotFoundError:
@@ -78,6 +87,7 @@ done
 
             time.sleep(4)
             if self._proc.poll() is None:
+                self._mode = "vnc"
                 logger.info("VNC viewer loop started with PID %s", self._proc.pid)
                 return True
 
@@ -88,19 +98,13 @@ done
             logger.exception("Failed to start VNC viewer")
             return False
 
-    def stop_vnc(self) -> bool:
-        """Kill the VNC viewer and stop reconnect loop."""
+    def _stop_vnc(self) -> bool:
         try:
-            self._should_run = False
-
-            # Signal the loop script to stop
             with open("/tmp/pi-stream-stop", "w") as f:
                 f.write("stop")
 
-            # Kill the processes
             subprocess.run(["pkill", "-f", "pi-stream-vnc-loop"], capture_output=True)
             subprocess.run(["pkill", "-f", "tigervncviewer"], capture_output=True)
-            subprocess.run(["pkill", "-f", "remmina"], capture_output=True)
 
             if self._proc and self._proc.poll() is None:
                 self._proc.terminate()
@@ -110,15 +114,85 @@ done
                     self._proc.kill()
 
             self._proc = None
+            self._mode = None
             logger.info("VNC viewer stopped")
             return True
         except Exception:
             logger.exception("Failed to stop VNC viewer")
             return False
 
-    def is_running(self) -> bool:
-        """Check if VNC viewer is running."""
-        if self._proc and self._proc.poll() is None:
+    # --- HD (ffmpeg) mode ---
+
+    def _has_mpv(self) -> bool:
+        return subprocess.run(["which", "mpv"], capture_output=True).returncode == 0
+
+    def start_receiver(self, port: int = 9999) -> bool:
+        """Start mpv/ffplay TCP receiver for HD streaming."""
+        try:
+            self.stop()
+            time.sleep(0.5)
+
+            env = {**os.environ, "DISPLAY": ":0"}
+
+            if self._has_mpv():
+                cmd = [
+                    "mpv",
+                    "--title=pi-stream-receiver",
+                    "--fullscreen",
+                    "--no-audio",
+                    "--profile=low-latency",
+                    "--no-cache",
+                    "--untimed",
+                    "--no-demuxer-thread",
+                    "--framedrop=vo",
+                    "--video-latency-hacks=yes",
+                    "--vo=gpu",
+                    "--hwdec=auto",
+                    f"tcp://0.0.0.0:{port}?listen",
+                ]
+            else:
+                cmd = [
+                    "ffplay",
+                    "-window_title", "pi-stream-receiver",
+                    "-fs", "-an",
+                    "-fflags", "nobuffer",
+                    "-flags", "low_delay",
+                    "-framedrop",
+                    "-analyzeduration", "100000",
+                    "-probesize", "100000",
+                    "-i", f"tcp://0.0.0.0:{port}?listen",
+                    "-loglevel", "warning",
+                ]
+
+            self._proc = subprocess.Popen(
+                cmd,
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=open("/tmp/pi-stream-receiver.log", "w"),
+            )
+
+            self._mode = "hd"
+            logger.info("HD receiver started with PID %s (%s)", self._proc.pid, "mpv" if self._has_mpv() else "ffplay")
             return True
-        r = subprocess.run(["pgrep", "-f", "tigervncviewer"], capture_output=True)
-        return r.returncode == 0
+
+        except Exception:
+            logger.exception("Failed to start HD receiver")
+            return False
+
+    def _stop_receiver(self) -> bool:
+        try:
+            if self._proc and self._proc.poll() is None:
+                self._proc.terminate()
+                self._proc.wait(timeout=5)
+            else:
+                subprocess.run(["pkill", "-f", "pi-stream-receiver"], capture_output=True)
+                subprocess.run(["pkill", "-f", "mpv.*tcp://"], capture_output=True)
+                subprocess.run(["pkill", "-f", "ffplay.*tcp://"], capture_output=True)
+
+            self._proc = None
+            self._mode = None
+            logger.info("HD receiver stopped")
+            return True
+        except Exception:
+            logger.exception("Failed to stop HD receiver")
+            return False
