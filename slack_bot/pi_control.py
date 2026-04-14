@@ -1,5 +1,6 @@
 """Local control for the Raspberry Pi VNC viewer (runs directly on the Pi)."""
 
+import base64
 import logging
 import os
 import subprocess
@@ -7,35 +8,27 @@ import time
 
 logger = logging.getLogger(__name__)
 
-PROCESS_NAME = "pi-stream-vnc"
 VNC_PASSWORD = os.environ.get("VNC_PASSWORD", "stream")
+REMMINA_FILE = "/tmp/pi-stream.remmina"
 
 
-def _create_tiger_passwd_file(password: str, path: str):
-    """Create a TigerVNC-compatible password file (DES-obfuscated)."""
-    def reverse_bits(b):
-        r = 0
-        for i in range(8):
-            if b & (1 << i):
-                r |= 1 << (7 - i)
-        return r
-
-    # VNC fixed key with bit-reversed bytes
-    key = bytes([reverse_bits(b) for b in [23, 82, 107, 6, 35, 78, 88, 7]])
-    pwd = password.encode()[:8].ljust(8, b"\x00")
-
-    # Use openssl CLI for DES-ECB encryption
-    result = subprocess.run(
-        ["openssl", "enc", "-des-ecb", "-nopad", "-nosalt", "-K", key.hex()],
-        input=pwd,
-        capture_output=True,
-    )
-    if result.returncode == 0 and result.stdout:
-        with open(path, "wb") as f:
-            f.write(result.stdout)
-        os.chmod(path, 0o600)
-        return True
-    return False
+def _write_remmina_profile(target_ip: str, password: str, port: int = 5900):
+    """Write a remmina connection profile file."""
+    # Remmina stores passwords as base64
+    b64_pass = base64.b64encode(password.encode()).decode()
+    content = f"""[remmina]
+name=pi-stream
+protocol=VNC
+server={target_ip}:{port}
+password={b64_pass}
+quality=2
+viewmode=4
+viewonly=1
+disableencryption=1
+colordepth=32
+"""
+    with open(REMMINA_FILE, "w") as f:
+        f.write(content)
 
 
 class PiController:
@@ -43,8 +36,6 @@ class PiController:
 
     def __init__(self, **_kwargs):
         self._proc: subprocess.Popen | None = None
-        self._passwd_file = "/tmp/pi-stream-vncpasswd"
-        _create_tiger_passwd_file(VNC_PASSWORD, self._passwd_file)
 
     def start_vnc(self, target_ip: str, port: int = 5900) -> bool:
         """Launch VNC viewer fullscreen, connecting to the target Mac."""
@@ -54,35 +45,40 @@ class PiController:
 
             env = {**os.environ, "DISPLAY": ":0"}
 
-            for viewer_cmd in [
+            _write_remmina_profile(target_ip, VNC_PASSWORD, port)
+
+            self._proc = subprocess.Popen(
+                ["remmina", "-c", REMMINA_FILE, "--no-tray-icon"],
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=open("/tmp/pi-stream-receiver.log", "w"),
+            )
+
+            time.sleep(3)
+            if self._proc.poll() is None:
+                logger.info("Remmina VNC started with PID %s", self._proc.pid)
+                return True
+
+            # Fallback: try xtigervncviewer
+            logger.warning("Remmina failed, trying xtigervncviewer")
+            self._proc = subprocess.Popen(
                 [
                     "xtigervncviewer",
                     "-FullScreen",
                     "-ViewOnly",
-                    "-QualityLevel=9",
-                    "-CompressLevel=1",
-                    f"-PasswordFile={self._passwd_file}",
+                    "-SecurityTypes=VncAuth",
                     f"{target_ip}::{port}",
                 ],
-            ]:
-                binary = viewer_cmd[0]
-                if subprocess.run(["which", binary], capture_output=True).returncode == 0:
-                    self._proc = subprocess.Popen(
-                        viewer_cmd,
-                        env=env,
-                        stdout=subprocess.DEVNULL,
-                        stderr=open("/tmp/pi-stream-receiver.log", "w"),
-                    )
-                    # Wait a moment to see if it crashes immediately
-                    time.sleep(2)
-                    if self._proc.poll() is None:
-                        logger.info("VNC viewer started with PID %s (%s)", self._proc.pid, binary)
-                        return True
-                    else:
-                        logger.warning("%s exited immediately, trying next viewer", binary)
-                        continue
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=open("/tmp/pi-stream-receiver.log", "w"),
+            )
+            time.sleep(2)
+            if self._proc.poll() is None:
+                logger.info("TigerVNC started with PID %s", self._proc.pid)
+                return True
 
-            logger.error("No VNC viewer found — install: sudo apt install tigervnc-viewer")
+            logger.error("All VNC viewers failed")
             return False
 
         except Exception:
@@ -95,7 +91,7 @@ class PiController:
             if self._proc and self._proc.poll() is None:
                 self._proc.terminate()
                 self._proc.wait(timeout=5)
-            # Also kill any stray VNC viewers
+            subprocess.run(["pkill", "-f", "remmina"], capture_output=True)
             subprocess.run(["pkill", "-f", "vncviewer"], capture_output=True)
             self._proc = None
             logger.info("VNC viewer stopped")
@@ -108,5 +104,6 @@ class PiController:
         """Check if VNC viewer is running."""
         if self._proc and self._proc.poll() is None:
             return True
-        result = subprocess.run(["pgrep", "-f", "vncviewer"], capture_output=True)
-        return result.returncode == 0
+        r1 = subprocess.run(["pgrep", "-f", "remmina"], capture_output=True)
+        r2 = subprocess.run(["pgrep", "-f", "vncviewer"], capture_output=True)
+        return r1.returncode == 0 or r2.returncode == 0
