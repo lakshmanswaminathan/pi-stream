@@ -3,8 +3,8 @@
 import logging
 import os
 import subprocess
+import threading
 import time
-import tempfile
 
 logger = logging.getLogger(__name__)
 
@@ -16,63 +16,72 @@ class PiController:
 
     def __init__(self, **_kwargs):
         self._proc: subprocess.Popen | None = None
+        self._reconnect_thread: threading.Thread | None = None
+        self._should_run = False
+        self._target_ip: str | None = None
+        self._port: int = 5900
 
-    def _create_expect_script(self, target_ip: str, password: str, port: int) -> str:
-        """Create an expect script that auto-enters the VNC password."""
-        script = f"""#!/usr/bin/expect -f
-set timeout 30
-spawn xtigervncviewer -FullScreen -ViewOnly -QualityLevel=5 -CompressLevel=6 -PreferredEncoding=ZRLE -LowColorLevel=1 {target_ip}::{port}
-expect "Password:"
-send "{password}\\r"
-expect eof
+    def _create_reconnect_script(self, target_ip: str, password: str, port: int) -> str:
+        """Create a bash script that auto-reconnects VNC with expect for password."""
+        script = f"""#!/bin/bash
+# Auto-reconnecting VNC viewer
+while true; do
+    expect -c '
+        set timeout 30
+        spawn xtigervncviewer -FullScreen -ViewOnly -QualityLevel=5 -CompressLevel=6 -PreferredEncoding=ZRLE -LowColorLevel=1 {target_ip}::{port}
+        expect "Password:"
+        send "{password}\\r"
+        expect eof
+    ' >> /tmp/pi-stream-receiver.log 2>&1
+
+    # Check if stop file exists (signals we should quit)
+    if [ -f /tmp/pi-stream-stop ]; then
+        rm -f /tmp/pi-stream-stop
+        exit 0
+    fi
+
+    echo "$(date): VNC disconnected, reconnecting in 2s..." >> /tmp/pi-stream-receiver.log
+    sleep 2
+done
 """
-        path = "/tmp/pi-stream-vnc-connect.exp"
+        path = "/tmp/pi-stream-vnc-loop.sh"
         with open(path, "w") as f:
             f.write(script)
         os.chmod(path, 0o700)
         return path
 
     def start_vnc(self, target_ip: str, port: int = 5900) -> bool:
-        """Launch VNC viewer fullscreen, connecting to the target Mac."""
+        """Launch VNC viewer with auto-reconnect."""
         try:
             self.stop_vnc()
             time.sleep(0.5)
 
+            self._target_ip = target_ip
+            self._port = port
+            self._should_run = True
+
             env = {**os.environ, "DISPLAY": ":0"}
 
-            # Check if expect is available
-            has_expect = subprocess.run(["which", "expect"], capture_output=True).returncode == 0
+            # Remove stop signal file
+            try:
+                os.remove("/tmp/pi-stream-stop")
+            except FileNotFoundError:
+                pass
 
-            if has_expect:
-                script = self._create_expect_script(target_ip, VNC_PASSWORD, port)
-                self._proc = subprocess.Popen(
-                    ["expect", script],
-                    env=env,
-                    stdout=subprocess.DEVNULL,
-                    stderr=open("/tmp/pi-stream-receiver.log", "w"),
-                )
-            else:
-                # Fallback: launch xtigervncviewer directly (user must enter password manually)
-                self._proc = subprocess.Popen(
-                    [
-                        "xtigervncviewer",
-                        "-FullScreen",
-                        "-ViewOnly",
-                        "-QualityLevel=9",
-                        "-CompressLevel=1",
-                        f"{target_ip}::{port}",
-                    ],
-                    env=env,
-                    stdout=subprocess.DEVNULL,
-                    stderr=open("/tmp/pi-stream-receiver.log", "w"),
-                )
+            script = self._create_reconnect_script(target_ip, VNC_PASSWORD, port)
+            self._proc = subprocess.Popen(
+                ["bash", script],
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
 
-            time.sleep(3)
+            time.sleep(4)
             if self._proc.poll() is None:
-                logger.info("VNC viewer started with PID %s", self._proc.pid)
+                logger.info("VNC viewer loop started with PID %s", self._proc.pid)
                 return True
 
-            logger.error("VNC viewer exited immediately")
+            logger.error("VNC viewer loop exited immediately")
             return False
 
         except Exception:
@@ -80,14 +89,26 @@ expect eof
             return False
 
     def stop_vnc(self) -> bool:
-        """Kill the VNC viewer."""
+        """Kill the VNC viewer and stop reconnect loop."""
         try:
+            self._should_run = False
+
+            # Signal the loop script to stop
+            with open("/tmp/pi-stream-stop", "w") as f:
+                f.write("stop")
+
+            # Kill the processes
+            subprocess.run(["pkill", "-f", "pi-stream-vnc-loop"], capture_output=True)
+            subprocess.run(["pkill", "-f", "tigervncviewer"], capture_output=True)
+            subprocess.run(["pkill", "-f", "remmina"], capture_output=True)
+
             if self._proc and self._proc.poll() is None:
                 self._proc.terminate()
-                self._proc.wait(timeout=5)
-            subprocess.run(["pkill", "-f", "tigervncviewer"], capture_output=True)
-            subprocess.run(["pkill", "-f", "pi-stream-vnc"], capture_output=True)
-            subprocess.run(["pkill", "-f", "remmina"], capture_output=True)
+                try:
+                    self._proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self._proc.kill()
+
             self._proc = None
             logger.info("VNC viewer stopped")
             return True
