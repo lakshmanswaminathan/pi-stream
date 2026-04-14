@@ -38,8 +38,13 @@ class PiController:
                     "--no-cache",
                     "--untimed",
                     "--no-demuxer-thread",
-                    "--video-sync=audio",
-                    "--framedrop=decoder+vo",
+                    "--framedrop=vo",
+                    "--video-latency-hacks=yes",
+                    "--demuxer-lavf-o=fflags=+nobuffer+fastseek",
+                    "--demuxer-lavf-analyzeduration=0.1",
+                    "--demuxer-lavf-probesize=100000",
+                    "--vo=gpu",
+                    "--hwdec=auto",
                     f"tcp://0.0.0.0:{udp_port}?listen",
                 ]
             else:
