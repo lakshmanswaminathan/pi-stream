@@ -11,28 +11,40 @@ PROCESS_NAME = "pi-stream-vnc"
 VNC_PASSWORD = os.environ.get("VNC_PASSWORD", "stream")
 
 
+def _create_tiger_passwd_file(password: str, path: str):
+    """Create a TigerVNC-compatible password file (DES-obfuscated)."""
+    def reverse_bits(b):
+        r = 0
+        for i in range(8):
+            if b & (1 << i):
+                r |= 1 << (7 - i)
+        return r
+
+    # VNC fixed key with bit-reversed bytes
+    key = bytes([reverse_bits(b) for b in [23, 82, 107, 6, 35, 78, 88, 7]])
+    pwd = password.encode()[:8].ljust(8, b"\x00")
+
+    # Use openssl CLI for DES-ECB encryption
+    result = subprocess.run(
+        ["openssl", "enc", "-des-ecb", "-nopad", "-nosalt", "-K", key.hex()],
+        input=pwd,
+        capture_output=True,
+    )
+    if result.returncode == 0 and result.stdout:
+        with open(path, "wb") as f:
+            f.write(result.stdout)
+        os.chmod(path, 0o600)
+        return True
+    return False
+
+
 class PiController:
     """Manages VNC viewer on the Pi to connect to a Mac's Screen Sharing."""
 
     def __init__(self, **_kwargs):
         self._proc: subprocess.Popen | None = None
         self._passwd_file = "/tmp/pi-stream-vncpasswd"
-        self._create_passwd_file()
-
-    def _create_passwd_file(self):
-        """Create a VNC password file for authentication."""
-        try:
-            result = subprocess.run(
-                ["vncpasswd", "-f"],
-                input=VNC_PASSWORD.encode(),
-                capture_output=True,
-            )
-            if result.returncode == 0:
-                with open(self._passwd_file, "wb") as f:
-                    f.write(result.stdout)
-                os.chmod(self._passwd_file, 0o600)
-        except Exception:
-            pass
+        _create_tiger_passwd_file(VNC_PASSWORD, self._passwd_file)
 
     def start_vnc(self, target_ip: str, port: int = 5900) -> bool:
         """Launch VNC viewer fullscreen, connecting to the target Mac."""
@@ -44,22 +56,13 @@ class PiController:
 
             for viewer_cmd in [
                 [
-                    "vncviewer",
-                    "-FullScreen",
-                    "-ViewOnly",
-                    "-QualityLevel=9",
-                    "-CompressLevel=1",
-                    f"-passwd={self._passwd_file}",
-                    f"{target_ip}:{port}",
-                ],
-                [
                     "xtigervncviewer",
                     "-FullScreen",
                     "-ViewOnly",
                     "-QualityLevel=9",
                     "-CompressLevel=1",
-                    f"-passwd={self._passwd_file}",
-                    f"{target_ip}:{port}",
+                    f"-PasswordFile={self._passwd_file}",
+                    f"{target_ip}::{port}",
                 ],
             ]:
                 binary = viewer_cmd[0]
