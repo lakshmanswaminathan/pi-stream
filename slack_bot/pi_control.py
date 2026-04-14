@@ -37,17 +37,32 @@ class PiController:
 
     # --- VNC mode ---
 
+    def _create_passwd_file(self):
+        """Create TigerVNC-compatible password file using DES encryption."""
+        import subprocess as sp
+        pwd = VNC_PASSWORD.encode()[:8].ljust(8, b"\x00")
+        # VNC fixed key with bit-reversed bytes
+        key = "e84ad660c4722c98"
+        r = sp.run(
+            ["openssl", "enc", "-des-ecb", "-nosalt", "-nopad", "-K", key,
+             "-provider", "legacy", "-provider", "default"],
+            input=pwd, capture_output=True,
+        )
+        if r.stdout:
+            path = "/tmp/pi-stream-vncpasswd"
+            with open(path, "wb") as f:
+                f.write(r.stdout)
+            os.chmod(path, 0o600)
+            return path
+        return None
+
     def _create_reconnect_script(self, target_ip: str, password: str, port: int) -> str:
+        passwd_file = self._create_passwd_file()
+        passwd_arg = f"-PasswordFile={passwd_file}" if passwd_file else ""
         script = f"""#!/bin/bash
 # Auto-reconnecting VNC viewer
 while true; do
-    expect -c '
-        set timeout -1
-        spawn xtigervncviewer -FullScreen -ViewOnly -PreferredEncoding=Tight -QualityLevel=5 -CompressLevel=2 -AutoSelect=0 {target_ip}::{port}
-        expect "Password:"
-        send "{password}\\r"
-        expect eof
-    ' >> /tmp/pi-stream-receiver.log 2>&1
+    xtigervncviewer -FullScreen -ViewOnly -PreferredEncoding=Tight -QualityLevel=5 -CompressLevel=2 -AutoSelect=0 {passwd_arg} {target_ip}::{port} >> /tmp/pi-stream-receiver.log 2>&1
 
     if [ -f /tmp/pi-stream-stop ]; then
         rm -f /tmp/pi-stream-stop
