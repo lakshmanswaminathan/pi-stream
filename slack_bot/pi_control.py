@@ -43,7 +43,7 @@ class PiController:
 while true; do
     expect -c '
         set timeout -1
-        spawn xtigervncviewer -FullScreen -ViewOnly -PreferredEncoding=Tight -QualityLevel=3 -CompressLevel=1 -AutoSelect=0 -LowColorLevel=1 -FullColor=0 {target_ip}::{port}
+        spawn xtigervncviewer -FullScreen -ViewOnly -PreferredEncoding=Tight -QualityLevel=5 -CompressLevel=2 -AutoSelect=0 {target_ip}::{port}
         expect "Password:"
         send "{password}\\r"
         expect eof
