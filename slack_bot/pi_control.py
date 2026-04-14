@@ -8,6 +8,7 @@ import time
 logger = logging.getLogger(__name__)
 
 PROCESS_NAME = "pi-stream-vnc"
+VNC_PASSWORD = os.environ.get("VNC_PASSWORD", "stream")
 
 
 class PiController:
@@ -15,6 +16,23 @@ class PiController:
 
     def __init__(self, **_kwargs):
         self._proc: subprocess.Popen | None = None
+        self._passwd_file = "/tmp/pi-stream-vncpasswd"
+        self._create_passwd_file()
+
+    def _create_passwd_file(self):
+        """Create a VNC password file for authentication."""
+        try:
+            result = subprocess.run(
+                ["vncpasswd", "-f"],
+                input=VNC_PASSWORD.encode(),
+                capture_output=True,
+            )
+            if result.returncode == 0:
+                with open(self._passwd_file, "wb") as f:
+                    f.write(result.stdout)
+                os.chmod(self._passwd_file, 0o600)
+        except Exception:
+            pass
 
     def start_vnc(self, target_ip: str, port: int = 5900) -> bool:
         """Launch VNC viewer fullscreen, connecting to the target Mac."""
@@ -24,7 +42,6 @@ class PiController:
 
             env = {**os.environ, "DISPLAY": ":0"}
 
-            # Try vncviewer (TigerVNC/RealVNC), fall back to remmina
             for viewer_cmd in [
                 [
                     "vncviewer",
@@ -32,6 +49,7 @@ class PiController:
                     "-ViewOnly",
                     "-QualityLevel=9",
                     "-CompressLevel=1",
+                    f"-passwd={self._passwd_file}",
                     f"{target_ip}:{port}",
                 ],
                 [
@@ -40,6 +58,7 @@ class PiController:
                     "-ViewOnly",
                     "-QualityLevel=9",
                     "-CompressLevel=1",
+                    f"-passwd={self._passwd_file}",
                     f"{target_ip}:{port}",
                 ],
             ]:
