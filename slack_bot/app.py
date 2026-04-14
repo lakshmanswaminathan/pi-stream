@@ -107,11 +107,7 @@ def handle_stream(ack, command, respond):
                 return
             pi.stop_receiver()
             _current_stream = None
-        respond(":tv: Stream stopped. The TV is free.")
-        app.client.chat_postMessage(
-            channel=channel,
-            text=f":tv: <@{user_id}> stopped streaming. TV is available.",
-        )
+        respond(":tv: Stream stopped. The TV is free.", response_type="in_channel")
         return
 
     # --- /stream status ---
@@ -168,11 +164,6 @@ def handle_stream(ack, command, respond):
         f"Run `/stream stop` when you're done."
     )
 
-    # Notify the channel
-    app.client.chat_postMessage(
-        channel=channel,
-        text=f":tv: <@{user_id}> started streaming to the TV!",
-    )
 
 
 @app.event("app_mention")
