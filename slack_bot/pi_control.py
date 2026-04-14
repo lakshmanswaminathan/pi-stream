@@ -21,7 +21,7 @@ class PiController:
         """Create an expect script that auto-enters the VNC password."""
         script = f"""#!/usr/bin/expect -f
 set timeout 30
-spawn xtigervncviewer -FullScreen -ViewOnly -QualityLevel=9 -CompressLevel=1 {target_ip}::{port}
+spawn xtigervncviewer -FullScreen -ViewOnly -QualityLevel=5 -CompressLevel=6 -PreferredEncoding=ZRLE -LowColorLevel=1 {target_ip}::{port}
 expect "Password:"
 send "{password}\\r"
 expect eof
